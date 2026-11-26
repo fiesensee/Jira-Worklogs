@@ -1,6 +1,6 @@
 import {
   cellKey, dateOf, parseHours, formatHours, rowTotal, dayCells, setCell, fillRest, splitDay,
-  copyPrevious, applyRules, applyRecurring, ensureIssue, summarize, mergeDays, resetDraft, prefill
+  copyPrevious, applyRules, applyRecurring, dayRows, saveDayRows, ensureIssue, summarize, mergeDays, resetDraft, prefill
 } from './logic.js';
 
 const app = document.getElementById('app');
@@ -114,6 +114,7 @@ async function loadFile(file) {
 }
 
 async function openSheet(sheet, month) {
+  state.wizard = null;
   const id = `${month}__${sheet.name}`;
   const saved = await api(`/api/draft?id=${encodeURIComponent(id)}`);
   if (saved) {
@@ -153,6 +154,7 @@ function renderGrid() {
       <span class="spacer"></span>
       <span>${h(sum.bookedTotal)} / ${h(sum.jattTotal)} h booked
         ${sum.mismatches.length ? `<span class="badge warn">${sum.mismatches.length} day(s) off</span>` : '<span class="badge">all days match</span>'}</span>
+      <button id="wizard" title="Go through the month day by day">Day by day ▸</button>
       <button class="primary" id="review">Review &amp; post (${sum.toPost.length})</button>
     </div>
     <div class="gridwrap">${gridTable(d)}</div>`;
@@ -162,6 +164,11 @@ function renderGrid() {
   document.getElementById('rules').onclick = openRules;
   document.getElementById('recurring').onclick = openRecurring;
   document.getElementById('review').onclick = openReview;
+  document.getElementById('wizard').onclick = () => {
+    const first = d.days.find(x => !d.reviewed?.[x.day] && rowTotal(d, x.day) !== x.minutes) || d.days.find(x => !d.reviewed?.[x.day]) || d.days[0];
+    openWizard(first.day);
+  };
+  app.querySelectorAll('[data-dayopen]').forEach(b => b.onclick = () => openWizard(Number(b.dataset.dayopen)));
   document.getElementById('applyRules').onclick = () => {
     const n = applyRules(d, position().rules);
     toast(n ? `Filled ${n} day(s) from rules.` : 'No empty day matched a rule.');
@@ -182,7 +189,7 @@ function renderGrid() {
   document.getElementById('fillWith').onchange = e => {
     const key = e.target.value;
     if (!key) return;
-    d.days.filter(x => rowTotal(d, x.day) === 0).forEach(x => fillRest(d, x.day, key));
+    d.days.filter(x => rowTotal(d, x.day) === 0).forEach(x => fillRest(d, x.day, key, position().rules));
     changed();
   };
 
@@ -191,30 +198,30 @@ function renderGrid() {
     input.onchange = () => {
       const minutes = parseHours(input.value);
       if (minutes === null) { toast('Use hours like 1.5, 1:30 or 1h 30m'); input.value = ''; return; }
-      setCell(d, Number(day), key, minutes);
+      setCell(d, Number(day), key, minutes, position().rules);
       changed();
     };
     input.onkeydown = e => {
-      if (e.key === 'Enter' && !input.value.trim()) { e.preventDefault(); fillRest(d, Number(day), key); changed(); }
+      if (e.key === 'Enter' && !input.value.trim()) { e.preventDefault(); fillRest(d, Number(day), key, position().rules); changed(); }
     };
   });
   app.querySelectorAll('[data-rest]').forEach(b => b.onclick = () => {
     const [day, key] = b.dataset.rest.split('|');
-    fillRest(d, Number(day), key); changed();
+    fillRest(d, Number(day), key, position().rules); changed();
   });
   app.querySelectorAll('[data-note]').forEach(b => b.onclick = () => {
     const [day, key] = b.dataset.note.split('|');
     openCell(Number(day), key);
   });
   app.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => {
-    if (!copyPrevious(d, Number(b.dataset.copy))) toast('No earlier day with hours.');
+    if (!copyPrevious(d, Number(b.dataset.copy), position().rules)) toast('No earlier day with hours.');
     changed();
   });
   app.querySelectorAll('[data-split]').forEach(b => b.onclick = () => {
     const day = Number(b.dataset.split);
     const keys = dayCells(d, day).map(c => c.key);
     if (keys.length < 2) return toast('Put some hours on two or more issues first, then split.');
-    splitDay(d, day, keys); changed();
+    splitDay(d, day, keys, position().rules); changed();
   });
   app.querySelectorAll('[data-clear]').forEach(b => b.onclick = () => {
     const day = Number(b.dataset.clear);
@@ -243,7 +250,7 @@ function gridTable(d) {
       </div></td>`;
     }).join('');
     return `<tr class="${cls}">
-      <td class="num">${WEEKDAYS[wd]} ${day.day}.</td>
+      <td class="num"><button class="daylink" data-dayopen="${day.day}" title="Open this day in the day-by-day view">${d.reviewed?.[day.day] ? '✓ ' : ''}${WEEKDAYS[wd]} ${day.day}.</button></td>
       <td class="num">${h(day.minutes)}</td>
       <td class="desc">${esc(day.description)}</td>
       ${cells}
@@ -364,7 +371,7 @@ function openCell(day, key) {
   document.getElementById('save').onclick = () => {
     const minutes = parseHours(document.getElementById('hours').value);
     if (minutes === null) return toast('Use hours like 1.5, 1:30 or 1h 30m');
-    setCell(d, day, key, minutes);
+    setCell(d, day, key, minutes, position().rules);
     const cell = d.cells[cellKey(day, key)];
     if (cell) { cell.comment = textarea.value.trim(); delete cell.error; }
     close(); changed();
@@ -482,6 +489,160 @@ function openRecurring() {
   document.getElementById('closeRec').onclick = () => { dialog.close(); render(); };
 }
 
+// ---------- day-by-day wizard ----------
+function openWizard(day) {
+  state.wizard = { day, rows: dayRows(state.draft, day, position().rules) };
+  drawer.hidden = true;
+  render();
+}
+
+function renderWizard() {
+  const d = state.draft;
+  const w = state.wizard;
+  const idx = d.days.findIndex(x => x.day === w.day);
+  const dayInfo = d.days[idx];
+  const booked = w.rows.reduce((s, r) => s + (r.minutes || 0), 0);
+  const left = dayInfo.minutes - booked;
+  const ruleIssues = new Set(position().rules.map(r => r.issue));
+  document.getElementById('context').textContent = `${d.sheet} · ${d.month} · day by day`;
+
+  const issueOptions = r => {
+    const known = [...d.issues];
+    if (r.issue && !known.some(i => i.key === r.issue)) known.push({ key: r.issue, summary: r.summary || '' });
+    return `<option value="">— pick issue —</option>` + known.map(i =>
+      `<option value="${esc(i.key)}" ${i.key === r.issue ? 'selected' : ''}>${esc(i.key)} · ${esc(i.summary.slice(0, 45))}</option>`).join('')
+      + `<option value="__other">＋ other issue…</option>`;
+  };
+
+  app.innerHTML = `
+    <div class="panel row wiz-nav">
+      <button id="wizBack">← Grid</button>
+      <div class="dots">${d.days.map(x => {
+        const ok = rowTotal(d, x.day) === x.minutes;
+        return `<button class="dot ${x.day === w.day ? 'current' : ''} ${d.reviewed?.[x.day] ? 'done' : ''} ${ok ? 'ok' : 'off'}" data-goto="${x.day}"
+          title="${WEEKDAYS[weekday(d.month, x.day)]} ${x.day}. · ${h(rowTotal(d, x.day))}/${h(x.minutes)} h${d.reviewed?.[x.day] ? ' · reviewed' : ''}">${x.day}</button>`;
+      }).join('')}</div>
+    </div>
+    <div class="panel wizard">
+      <div class="row">
+        <h2 style="margin:0">${WEEKDAYS[weekday(d.month, w.day)]} ${w.day}.${d.month.slice(5)}.${d.month.slice(0, 4)}</h2>
+        <span class="badge">${h(dayInfo.minutes)} h in JaTT</span>
+        ${d.reviewed?.[w.day] ? '<span class="badge">reviewed</span>' : ''}
+        <span class="spacer"></span>
+        <span id="left" class="${left === 0 ? 'ok' : 'warn'}">${left === 0 ? 'All hours assigned' : left > 0 ? `${h(left)} h left` : `${h(-left)} h too much`}</span>
+      </div>
+      <div class="jatt" style="margin:10px 0">${esc(dayInfo.description) || '<span class="muted">No description in JaTT</span>'}</div>
+      ${w.rows.map((r, i) => {
+        const learn = r.part && !r.matched && r.issue;
+        const snippets = state.config.snippets[r.issue] || [];
+        return `
+        <div class="wrow ${r.posted ? 'posted' : ''}" data-row="${i}">
+          <div class="row">
+            <select data-f="issue" ${r.posted ? 'disabled' : ''} style="flex:1;min-width:220px">${issueOptions(r)}</select>
+            <input data-f="hours" value="${formatHours(r.minutes)}" placeholder="h" ${r.posted ? 'disabled' : ''} style="width:70px;text-align:right">
+            <button class="small" data-rest="${i}" ${r.posted ? 'disabled' : ''} title="Give this row the hours that are left">⇥ rest</button>
+            ${r.posted ? '<span class="badge">posted</span>' : `<button class="small" data-del="${i}" title="Remove row">×</button>`}
+          </div>
+          <textarea data-f="comment" rows="2" ${r.posted ? 'disabled' : ''}>${esc(r.comment)}</textarea>
+          <div class="row wrow-foot">
+            ${snippets.map((sn, j) => `<button class="small snip" data-snip="${j}" title="${esc(sn)}">+ ${esc(sn.slice(0, 32))}</button>`).join('')}
+            <span class="spacer"></span>
+            ${learn ? `<label class="learn"><input type="checkbox" data-f="learn" ${r.learn !== false ? 'checked' : ''}> remember
+              <input data-f="pattern" value="${esc(r.pattern ?? r.part.toLowerCase())}" style="width:160px"> → ${esc(r.issue)}</label>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+      <div class="row" style="margin-top:10px">
+        <button id="addRow">+ Add row</button>
+        <span class="spacer"></span>
+        <button id="prev" ${idx === 0 ? 'disabled' : ''}>← Previous</button>
+        <button id="skip" ${idx === d.days.length - 1 ? 'disabled' : ''}>Skip</button>
+        <button id="saveNext" class="primary">${idx === d.days.length - 1 ? 'Save & back to grid' : 'Save & next'} <span class="kbd">Ctrl+Enter</span></button>
+      </div>
+    </div>`;
+
+  const go = day => openWizard(day);
+  const rerender = () => { renderWizard(); };
+  const updateLeft = () => {
+    const b = w.rows.reduce((s, r) => s + (r.minutes || 0), 0);
+    const l = dayInfo.minutes - b;
+    const el = document.getElementById('left');
+    el.className = l === 0 ? 'ok' : 'warn';
+    el.textContent = l === 0 ? 'All hours assigned' : l > 0 ? `${h(l)} h left` : `${h(-l)} h too much`;
+  };
+
+  document.getElementById('wizBack').onclick = () => { state.wizard = null; render(); };
+  app.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => go(Number(b.dataset.goto)));
+  app.querySelectorAll('.wrow').forEach(el => {
+    const r = w.rows[Number(el.dataset.row)];
+    el.querySelector('[data-f="issue"]').onchange = async e => {
+      let key = e.target.value;
+      if (key === '__other') {
+        const q = prompt('Issue key (e.g. ABC-123):');
+        key = '';
+        if (q) {
+          try {
+            const [found] = await api(`/api/issues/find?q=${encodeURIComponent(q.trim())}`);
+            if (found) { ensureIssue(d, found); key = found.key; saveDraft(); } else toast(`No issue found for “${q}”.`);
+          } catch (err) { toast(err.message); }
+        }
+      }
+      r.issue = key;
+      r.summary = d.issues.find(i => i.key === key)?.summary || '';
+      rerender();
+    };
+    const hours = el.querySelector('[data-f="hours"]');
+    hours.oninput = () => { const m = parseHours(hours.value); if (m !== null) { r.minutes = m; updateLeft(); } };
+    hours.onchange = () => { const m = parseHours(hours.value); if (m === null) { toast('Use hours like 1.5, 1:30 or 1h 30m'); hours.value = formatHours(r.minutes); } };
+    el.querySelector('[data-f="comment"]').oninput = e => { r.comment = e.target.value; };
+    const learn = el.querySelector('[data-f="learn"]');
+    if (learn) learn.onchange = () => { r.learn = learn.checked; };
+    const pattern = el.querySelector('[data-f="pattern"]');
+    if (pattern) pattern.oninput = () => { r.pattern = pattern.value; };
+    el.querySelectorAll('[data-snip]').forEach(b => b.onclick = () => {
+      const sn = state.config.snippets[r.issue][Number(b.dataset.snip)];
+      r.comment = r.comment.trim() ? `${r.comment.trim()}\n${sn}` : sn;
+      el.querySelector('[data-f="comment"]').value = r.comment;
+    });
+  });
+  app.querySelectorAll('[data-rest]').forEach(b => b.onclick = () => {
+    const r = w.rows[Number(b.dataset.rest)];
+    const others = w.rows.reduce((s, x) => s + (x === r ? 0 : x.minutes || 0), 0);
+    r.minutes = Math.max(0, dayInfo.minutes - others);
+    rerender();
+  });
+  app.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { w.rows.splice(Number(b.dataset.del), 1); rerender(); });
+  document.getElementById('addRow').onclick = () => {
+    const others = w.rows.reduce((s, x) => s + (x.minutes || 0), 0);
+    w.rows.push({ issue: '', minutes: Math.max(0, dayInfo.minutes - others), comment: '', posted: false });
+    rerender();
+  };
+  document.getElementById('prev').onclick = () => go(d.days[idx - 1].day);
+  document.getElementById('skip').onclick = () => go(d.days[idx + 1].day);
+  const saveNext = () => {
+    const error = saveDayRows(d, w.day, w.rows);
+    if (error) return toast(error);
+    let learned = 0;
+    for (const r of w.rows) {
+      const pattern = (r.pattern ?? r.part?.toLowerCase() ?? '').trim();
+      if (!r.part || r.matched || !r.issue || r.learn === false || !pattern || r.posted) continue;
+      if (position().rules.some(x => x.pattern.toLowerCase() === pattern.toLowerCase() && x.issue === r.issue)) continue;
+      position().rules.push({ pattern, issue: r.issue, summary: r.summary || d.issues.find(i => i.key === r.issue)?.summary || '' });
+      learned++;
+    }
+    if (learned) { saveConfig(); toast(`Saved. Learned ${learned} new rule(s).`); }
+    saveDraft();
+    if (idx === d.days.length - 1) { state.wizard = null; render(); } else go(d.days[idx + 1].day);
+  };
+  document.getElementById('saveNext').onclick = saveNext;
+  app.onkeydown = e => {
+    if (!state.wizard) return;
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveNext(); }
+  };
+  const firstEditable = app.querySelector('.wrow:not(.posted) [data-f="hours"]');
+  if (firstEditable) firstEditable.focus();
+}
+
 // ---------- review & post ----------
 function openReview() {
   const d = state.draft;
@@ -536,7 +697,9 @@ function openReview() {
 
 // ---------- boot ----------
 function render() {
-  if (state.draft) renderGrid(); else renderLoad();
+  if (state.draft && state.wizard) renderWizard();
+  else if (state.draft) renderGrid();
+  else renderLoad();
 }
 
 async function boot() {

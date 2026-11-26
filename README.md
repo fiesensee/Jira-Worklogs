@@ -30,8 +30,15 @@ To try it without a Jira, run `npm run mock`. It serves a fake Jira with a handf
    - **Fill empty days with…** puts every day that has no hours yet onto one issue.
    - **Reset grid** starts the month over: it removes all unposted hours, texts and issue columns, then adds pinned issues and applies rules again. Worklogs already posted to Jira are kept.
    - The *Booked* column turns orange when a day doesn't add up to the JaTT hours.
-5. **Write the texts.** Click **✎** next to a cell. The text starts as the JaTT description. Extend it, or insert a **snippet** you saved for that issue earlier. A blue ✎ means you changed the text.
-6. **Review & post.** It shows hours per issue and the days that don't match JaTT, then creates one Jira worklog per cell. Each worklog starts at 09:00 on its day (`WORKLOG_START` changes the time).
+   - Click a day's date to open it in the day-by-day view. A ✓ marks days you've saved there.
+5. **Or go day by day.** *Day by day ▸* starts at the first day you haven't reviewed that doesn't add up. Each day shows its JaTT description and one already-open row per comma-separated part, e.g. *Format anpassungen, Betrieb, Vault Migration* gives three rows.
+   - Each row has an issue (pre-selected when a mapping rule matches), hours (the unbooked time split evenly) and the part as its text, ready to extend. Snippets for the row's issue appear as buttons below it.
+   - **⇥ rest** gives a row the hours that are left. *+ Add row* adds another booking, and *＋ other issue…* in the issue list adds an issue by key.
+   - If you pick an issue for a part that no rule matched, **remember** is ticked, with the part as the pattern (you can edit it, e.g. `daily|planning`). Saving adds it as a mapping rule, so the next days are pre-mapped.
+   - **Ctrl+Enter** saves and moves to the next day. The numbered buttons at the top jump to a day: green when it adds up, orange when it doesn't, filled when reviewed.
+   - Existing bookings (from recurring entries, rules or the grid) show up as rows too. On days you haven't reviewed yet, parts that no booking's text mentions are added as extra rows.
+6. **Write the texts.** Click **✎** next to a cell. The text starts with the description parts that belong to that issue (by mapping rule), or the whole description if no rule applies. Extend it, or insert a **snippet** you saved for that issue earlier. A blue ✎ means you changed the text.
+7. **Review & post.** It shows hours per issue and the days that don't match JaTT, then creates one Jira worklog per cell. Each worklog starts at 09:00 on its day (`WORKLOG_START` changes the time).
 
 Posted cells are locked and remembered. If some posts fail, fix the red cells and post again; the ones already posted are skipped.
 

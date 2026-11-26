@@ -137,3 +137,62 @@ test('prefill books recurring first and lets rules split only the remaining time
   assert.equal(rowTotal(d, 3), 450);
   assert.equal(d.cells['4|B-1'].minutes, 225);
 });
+
+test('defaultComment gives a cell the description parts that belong to its issue', async () => {
+  const { defaultComment } = await import('../public/logic.js');
+  const d = { ...draft(), days: [{ day: 2, minutes: 480, description: 'Format anpassungen, Betrieb, Vault Migration' }] };
+  const rules = [{ pattern: 'betrieb', issue: 'OPS-1' }, { pattern: 'vault', issue: 'SEC-2' }];
+  assert.equal(defaultComment(d, 2, 'OPS-1', rules), 'Betrieb');
+  assert.equal(defaultComment(d, 2, 'NEW-9', rules), 'Format anpassungen', 'unmapped parts go to an unmapped issue');
+  assert.equal(defaultComment(d, 2, 'NEW-9', []), 'Format anpassungen, Betrieb, Vault Migration');
+  setCell(d, 2, 'SEC-2', 60, rules);
+  assert.equal(d.cells['2|SEC-2'].comment, 'Vault Migration');
+});
+
+test('dayRows offers one row per description part, pre-mapped by rules and pre-split', async () => {
+  const { dayRows } = await import('../public/logic.js');
+  const d = { ...draft(), days: [{ day: 2, minutes: 480, description: 'Format anpassungen, Betrieb, Vault Migration, Betriebsmeeting' }] };
+  const rules = [{ pattern: 'betrieb', issue: 'OPS-1', summary: 'Ops' }];
+  const rows = dayRows(d, 2, rules);
+  assert.deepEqual(rows.map(r => [r.issue, r.comment, r.minutes, r.matched]), [
+    ['', 'Format anpassungen', 160, false],
+    ['OPS-1', 'Betrieb, Betriebsmeeting', 160, true],
+    ['', 'Vault Migration', 160, false]
+  ]);
+});
+
+test('dayRows keeps existing cells and only adds parts their texts do not cover', async () => {
+  const { dayRows } = await import('../public/logic.js');
+  const d = { ...draft(), issues: [{ key: 'M-1', summary: '' }, { key: 'OPS-1', summary: '' }],
+    days: [{ day: 2, minutes: 480, description: 'Daily, Betrieb, Vault Migration' }] };
+  d.cells['2|M-1'] = { minutes: 15, comment: 'Daily standup', recurring: true };
+  d.cells['2|OPS-1'] = { minutes: 200, comment: 'Betrieb', worklogId: '3' };
+  const rows = dayRows(d, 2, []);
+  assert.deepEqual(rows.map(r => [r.issue, r.comment, r.minutes, r.posted]), [
+    ['M-1', 'Daily standup', 15, false],
+    ['OPS-1', 'Betrieb', 200, true],
+    ['', 'Vault Migration', 265, false]
+  ]);
+  d.reviewed = { 2: true };
+  assert.equal(dayRows(d, 2, []).length, 2, 'reviewed days show only what was saved');
+});
+
+test('saveDayRows merges rows per issue, drops removed issues and marks the day reviewed', async () => {
+  const { saveDayRows } = await import('../public/logic.js');
+  const d = { ...draft(), issues: [{ key: 'A-1', summary: '' }, { key: 'A-2', summary: '' }, { key: 'P-1', summary: '' }] };
+  d.cells['2|A-2'] = { minutes: 480, comment: 'old' };
+  d.cells['2|P-1'] = { minutes: 30, comment: 'posted', worklogId: '8' };
+  assert.match(saveDayRows(d, 2, [{ issue: '', minutes: 60, comment: 'x' }]), /Pick an issue/);
+  assert.match(saveDayRows(d, 2, [{ issue: 'P-1', minutes: 60, comment: 'x' }]), /already posted/);
+  assert.equal(d.cells['2|A-2'].minutes, 480, 'a refused save changes nothing');
+  assert.equal(saveDayRows(d, 2, [
+    { issue: 'P-1', minutes: 30, comment: 'posted', posted: true },
+    { issue: 'A-1', minutes: 200, comment: 'Format anpassungen' },
+    { issue: 'A-1', minutes: 250, comment: 'Review ' },
+    { issue: '', minutes: 0, comment: 'ignored' }
+  ]), null);
+  assert.deepEqual(d.cells['2|A-1'], { minutes: 450, comment: 'Format anpassungen\nReview' });
+  assert.equal(d.cells['2|A-2'], undefined);
+  assert.equal(d.cells['2|P-1'].worklogId, '8');
+  assert.deepEqual(d.reviewed, { 2: true });
+});

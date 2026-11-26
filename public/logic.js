@@ -130,8 +130,21 @@ export function ensureIssue(draft, issue) {
 
 const isPosted = cell => Boolean(cell?.worklogId);
 
-/** Sets a cell's hours, defaulting its text to the day's JaTT description. Posted cells are left alone. */
-export function setCell(draft, day, key, minutes) {
+/**
+ * Default worklog text for a cell: the description parts the rules map to this issue; otherwise the parts no
+ * rule maps anywhere; otherwise the whole JaTT description.
+ */
+export function defaultComment(draft, day, key, rules = []) {
+  const description = draft.days.find(d => d.day === day)?.description || '';
+  const { groups, unmatched } = matchRules(description, rules);
+  const mine = groups.find(g => g.issue === key);
+  if (mine) return mine.parts.join(', ');
+  if (groups.length && unmatched.length) return unmatched.join(', ');
+  return description;
+}
+
+/** Sets a cell's hours, defaulting its text via defaultComment. Posted cells are left alone. */
+export function setCell(draft, day, key, minutes, rules = []) {
   const k = cellKey(day, key);
   const cell = draft.cells[k];
   if (isPosted(cell)) return;
@@ -139,27 +152,26 @@ export function setCell(draft, day, key, minutes) {
     if (cell) draft.cells[k] = { ...cell, minutes: 0 };
     return;
   }
-  const description = draft.days.find(d => d.day === day)?.description || '';
-  draft.cells[k] = { ...cell, minutes, comment: cell?.comment || description };
+  draft.cells[k] = { ...cell, minutes, comment: cell?.comment || defaultComment(draft, day, key, rules) };
 }
 
 /** Puts whatever is not yet booked on that day onto one issue. */
-export function fillRest(draft, day, key) {
+export function fillRest(draft, day, key, rules = []) {
   const d = draft.days.find(x => x.day === day);
   const current = draft.cells[cellKey(day, key)]?.minutes || 0;
   const rest = d.minutes - (rowTotal(draft, day) - current);
-  if (rest > 0) setCell(draft, day, key, rest);
+  if (rest > 0) setCell(draft, day, key, rest, rules);
 }
 
 /** Splits the day evenly across the given issues, replacing unposted hours. */
-export function splitDay(draft, day, keys) {
+export function splitDay(draft, day, keys, rules = []) {
   const d = draft.days.find(x => x.day === day);
   const parts = splitEvenly(d.minutes, keys.length);
-  keys.forEach((key, idx) => setCell(draft, day, key, parts[idx]));
+  keys.forEach((key, idx) => setCell(draft, day, key, parts[idx], rules));
 }
 
 /** Copies the split of the closest earlier day with hours, scaled to this day's total. */
-export function copyPrevious(draft, day) {
+export function copyPrevious(draft, day, rules = []) {
   const d = draft.days.find(x => x.day === day);
   const prev = [...draft.days].reverse().find(x => x.day < day && rowTotal(draft, x.day) > 0);
   if (!d || !prev) return false;
@@ -171,7 +183,7 @@ export function copyPrevious(draft, day) {
       ? d.minutes - assigned
       : Math.round((cell.minutes / sourceTotal) * d.minutes / 5) * 5;
     assigned += minutes;
-    setCell(draft, day, key, minutes);
+    setCell(draft, day, key, minutes, rules);
   });
   return true;
 }
@@ -206,11 +218,72 @@ export function resetDraft(draft, position = {}) {
   const postedCells = Object.fromEntries(Object.entries(draft.cells).filter(([, c]) => isPosted(c)));
   const kept = Object.keys(postedCells).length;
   const postedKeys = new Set(Object.keys(postedCells).map(k => k.split('|')[1]));
-  const fresh = { ...draft, issues: draft.issues.filter(i => postedKeys.has(i.key)), cells: postedCells };
+  const fresh = { ...draft, reviewed: {}, issues: draft.issues.filter(i => postedKeys.has(i.key)), cells: postedCells };
   return { draft: fresh, kept, ...prefill(fresh, position) };
 }
 
 /** Refreshes days from a newly loaded export while keeping all booked cells. */
 export function mergeDays(draft, days) {
   return { ...draft, days: days.map(d => ({ day: d.day, minutes: d.minutes, description: d.description })) };
+}
+
+// ---------- day-by-day wizard ----------
+
+const covers = (comment, part) => String(comment || '').toLowerCase().includes(part.toLowerCase());
+
+/**
+ * Editable booking rows for one day in the wizard: { issue, minutes, comment, posted, part?, matched? }.
+ * Existing cells come first. On days not reviewed yet, every description part that no cell's text covers is
+ * added as its own row, with the issue its rule points to (if any) and an even share of the unbooked time.
+ * Parts mapped to the same issue share one row.
+ */
+export function dayRows(draft, day, rules = []) {
+  const d = draft.days.find(x => x.day === day);
+  const rows = dayCells(draft, day).map(({ key, cell }) => ({
+    issue: key, minutes: cell.minutes, comment: cell.comment || '', posted: isPosted(cell)
+  }));
+  if (draft.reviewed?.[day]) return rows;
+
+  const open = descriptionParts(d.description).filter(part => !rows.some(r => covers(r.comment, part)));
+  const added = [];
+  for (const part of open) {
+    const rule = rules.find(r => ruleMatches(r.pattern, part));
+    const existing = rule && (rows.find(r => r.issue === rule.issue && !r.posted) || added.find(r => r.issue === rule.issue));
+    if (existing) {
+      existing.comment = existing.comment ? `${existing.comment}, ${part}` : part;
+      continue;
+    }
+    added.push({ issue: rule?.issue || '', summary: rule?.summary || '', minutes: 0, comment: part, posted: false, part, matched: Boolean(rule) });
+  }
+  const free = d.minutes - rows.reduce((s, r) => s + r.minutes, 0);
+  if (free > 0 && added.length) splitEvenly(free, added.length).forEach((m, i) => { added[i].minutes = m; });
+  return [...rows, ...added];
+}
+
+/**
+ * Writes the wizard rows of a day back into the draft: rows with the same issue are merged, unposted cells of
+ * issues no longer listed are removed, posted cells stay untouched. Returns an error message or null.
+ */
+export function saveDayRows(draft, day, rows) {
+  const editable = rows.filter(r => !r.posted && r.minutes > 0);
+  if (editable.some(r => !r.issue)) return 'Pick an issue for every row with hours (or set its hours to 0).';
+  const merged = new Map();
+  for (const r of editable) {
+    const m = merged.get(r.issue) || { minutes: 0, comments: [] };
+    m.minutes += r.minutes;
+    if (r.comment.trim()) m.comments.push(r.comment.trim());
+    merged.set(r.issue, m);
+  }
+  const blocked = [...merged.keys()].find(issue => isPosted(draft.cells[cellKey(day, issue)]));
+  if (blocked) return `${blocked} is already posted for this day; book on another issue.`;
+  for (const key of Object.keys(draft.cells)) {
+    const [cellDay, issue] = key.split('|');
+    if (Number(cellDay) !== day || isPosted(draft.cells[key])) continue;
+    if (!merged.has(issue)) delete draft.cells[key];
+  }
+  for (const [issue, m] of merged) {
+    draft.cells[cellKey(day, issue)] = { minutes: m.minutes, comment: m.comments.join('\n') };
+  }
+  draft.reviewed = { ...draft.reviewed, [day]: true };
+  return null;
 }
