@@ -1,6 +1,6 @@
 import {
   cellKey, dateOf, parseHours, formatHours, rowTotal, dayCells, setCell, fillRest, splitDay,
-  copyPrevious, applyRules, ensureIssue, summarize, mergeDays, resetDraft
+  copyPrevious, applyRules, applyRecurring, ensureIssue, summarize, mergeDays, resetDraft, prefill
 } from './logic.js';
 
 const app = document.getElementById('app');
@@ -39,8 +39,11 @@ function toast(message) {
 
 const position = () => {
   const name = state.draft.sheet;
-  state.config.positions[name] ||= { pinned: [], rules: [] };
-  return state.config.positions[name];
+  const pos = (state.config.positions[name] ||= {});
+  pos.pinned ||= [];
+  pos.rules ||= [];
+  pos.recurring ||= [];
+  return pos;
 };
 
 let saveTimer;
@@ -60,6 +63,13 @@ const saveConfig = () => api('/api/config', { method: 'PUT', body: JSON.stringif
   .catch(e => toast(`Saving settings failed: ${e.message}`));
 
 function changed() { saveDraft(); render(); }
+
+function prefillMessage(prefix, recurringCells, filled) {
+  const parts = [];
+  if (recurringCells) parts.push(`${recurringCells} recurring booking(s)`);
+  if (filled) parts.push(`${filled} day(s) from rules`);
+  return parts.length ? `${prefix}: ${parts.join(', ')}.` : `${prefix}.`;
+}
 
 // ---------- load screen ----------
 function renderLoad() {
@@ -111,9 +121,8 @@ async function openSheet(sheet, month) {
   } else {
     state.draft = { id, month, sheet: sheet.name, days: [], issues: [], cells: {} };
     state.draft = mergeDays(state.draft, sheet.days);
-    position().pinned.forEach(i => ensureIssue(state.draft, i));
-    const filled = applyRules(state.draft, position().rules);
-    if (filled) toast(`Rules pre-filled ${filled} day(s).`);
+    const { recurringCells, filled } = prefill(state.draft, position());
+    if (recurringCells || filled) toast(prefillMessage('Pre-filled', recurringCells, filled));
   }
   saveDraft();
   render();
@@ -135,6 +144,7 @@ function renderGrid() {
     <div class="panel row">
       <button id="back">← Other file</button>
       <button id="rules">Mapping rules (${position().rules.length})</button>
+      <button id="recurring">Recurring (${position().recurring.length})</button>
       <button id="applyRules">Apply rules to empty days</button>
       <button id="reset" title="Start this month over: removes all unposted hours, texts and issue columns">Reset grid</button>
       <span class="row">Fill empty days with
@@ -150,6 +160,7 @@ function renderGrid() {
   renderIssues();
   document.getElementById('back').onclick = () => { state.draft = null; render(); };
   document.getElementById('rules').onclick = openRules;
+  document.getElementById('recurring').onclick = openRecurring;
   document.getElementById('review').onclick = openReview;
   document.getElementById('applyRules').onclick = () => {
     const n = applyRules(d, position().rules);
@@ -165,7 +176,7 @@ function renderGrid() {
     const result = resetDraft(d, position());
     state.draft = result.draft;
     drawer.hidden = true;
-    toast(`Grid reset${result.filled ? `, rules pre-filled ${result.filled} day(s)` : ''}.`);
+    toast(prefillMessage('Grid reset', result.recurringCells, result.filled));
     changed();
   };
   document.getElementById('fillWith').onchange = e => {
@@ -386,7 +397,7 @@ function openRules() {
   dialog.innerHTML = `
     <h3 style="margin-top:0">Mapping rules for ${esc(state.draft.sheet)}</h3>
     <p class="muted">Each part of a day's JaTT description (parts are separated by commas) goes to the first rule it matches.
-      Days matching several issues are split evenly. Rules only fill days that have no hours yet.</p>
+      Days matching several issues are split evenly. Rules only fill days that have no hours yet, or only recurring bookings; then they split the time that is left.</p>
     <table><thead><tr><th>Text contains</th><th>Issue</th><th></th></tr></thead><tbody>
       ${pos.rules.map((r, idx) => `<tr><td><input data-pattern="${idx}" value="${esc(r.pattern)}" style="width:100%"></td>
         <td>${esc(r.issue)}</td>
@@ -403,6 +414,72 @@ function openRules() {
     saveConfig(); openRules();
   });
   document.getElementById('closeRules').onclick = () => { dialog.close(); render(); };
+}
+
+// ---------- recurring bookings dialog ----------
+const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
+function openRecurring() {
+  const pos = position();
+  const d = state.draft;
+  const options = r => {
+    const known = [...d.issues];
+    if (r.issue && !known.some(i => i.key === r.issue)) known.push({ key: r.issue, summary: r.summary });
+    return known.map(i => `<option value="${esc(i.key)}" ${i.key === r.issue ? 'selected' : ''}>${esc(i.key)} ${esc(i.summary.slice(0, 30))}</option>`).join('');
+  };
+  dialog.innerHTML = `
+    <h3 style="margin-top:0">Recurring bookings for ${esc(d.sheet)}</h3>
+    <p class="muted">Booked on every matching weekday that has JaTT hours, before the mapping rules split the rest of the day.
+      Applied automatically when a month is opened for the first time or reset; days that already have hours on that issue are skipped.</p>
+    ${pos.recurring.map((r, idx) => `
+      <div class="recurring" data-idx="${idx}">
+        <div class="row">
+          <select data-field="issue">${options(r)}</select>
+          <input data-field="hours" value="${formatHours(r.minutes)}" style="width:70px" title="Hours, e.g. 0.25 or 15m"> h
+          <span class="days">${WEEKDAY_ORDER.map(wd => `<label><input type="checkbox" data-wd="${wd}" ${r.weekdays?.includes(wd) ? 'checked' : ''}>${WEEKDAYS[wd]}</label>`).join('')}</span>
+          <span class="spacer"></span>
+          <button class="small" data-delrec="${idx}" title="Delete">×</button>
+        </div>
+        <input data-field="comment" value="${esc(r.comment)}" placeholder="Worklog text, e.g. Daily standup" style="width:100%;margin-top:6px">
+      </div>`).join('') || '<p class="muted">No recurring bookings yet.</p>'}
+    <div class="row" style="margin-top:12px">
+      <button id="addRec" ${d.issues.length ? '' : 'disabled title="Add an issue to the grid first"'}>+ Add recurring booking</button>
+      <span class="spacer"></span>
+      <button id="applyRec" ${pos.recurring.length ? '' : 'disabled'}>Apply to this month</button>
+      <button id="closeRec" class="primary">Done</button>
+    </div>`;
+  dialog.showModal();
+
+  dialog.querySelectorAll('.recurring').forEach(el => {
+    const r = pos.recurring[Number(el.dataset.idx)];
+    el.querySelector('[data-field="issue"]').onchange = e => {
+      r.issue = e.target.value;
+      r.summary = d.issues.find(i => i.key === r.issue)?.summary || r.summary;
+      saveConfig();
+    };
+    el.querySelector('[data-field="hours"]').onchange = e => {
+      const minutes = parseHours(e.target.value);
+      if (!minutes) { toast('Use hours like 0.25, 0:15 or 15m'); e.target.value = formatHours(r.minutes); return; }
+      r.minutes = minutes; saveConfig();
+    };
+    el.querySelector('[data-field="comment"]').onchange = e => { r.comment = e.target.value.trim(); saveConfig(); };
+    el.querySelectorAll('[data-wd]').forEach(cb => cb.onchange = () => {
+      r.weekdays = [...el.querySelectorAll('[data-wd]:checked')].map(x => Number(x.dataset.wd));
+      saveConfig();
+    });
+  });
+  dialog.querySelectorAll('[data-delrec]').forEach(b => b.onclick = () => { pos.recurring.splice(Number(b.dataset.delrec), 1); saveConfig(); openRecurring(); });
+  document.getElementById('addRec').onclick = () => {
+    const issue = d.issues[0];
+    pos.recurring.push({ issue: issue.key, summary: issue.summary, minutes: 15, comment: '', weekdays: [1, 2, 3, 4, 5] });
+    saveConfig(); openRecurring();
+  };
+  document.getElementById('applyRec').onclick = () => {
+    const n = applyRecurring(d, pos.recurring);
+    toast(n ? `Booked ${n} recurring cell(s).` : 'Nothing to book: matching days already have hours on those issues.');
+    saveDraft();
+  };
+  document.getElementById('closeRec').onclick = () => { dialog.close(); render(); };
 }
 
 // ---------- review & post ----------

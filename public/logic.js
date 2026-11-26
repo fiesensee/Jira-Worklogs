@@ -62,14 +62,22 @@ export function matchRules(description, rules) {
   return { groups: [...groups.values()], unmatched };
 }
 
-/** Fills every day that has no hours yet from the rules; returns how many days were filled. */
+/**
+ * Fills days that have no hours yet, or only recurring bookings, from the rules; returns how many days were filled.
+ * Only the time left after recurring bookings is split, and rules pointing at an issue that already has a
+ * recurring booking that day are skipped (the recurring booking already covers that part).
+ */
 export function applyRules(draft, rules) {
   let filled = 0;
   for (const d of draft.days) {
-    if (rowTotal(draft, d.day) > 0) continue;
-    const { groups } = matchRules(d.description, rules);
+    const cells = dayCells(draft, d.day);
+    if (cells.some(c => !c.cell.recurring)) continue;
+    const remaining = d.minutes - rowTotal(draft, d.day);
+    if (remaining <= 0) continue;
+    const recurringKeys = new Set(cells.map(c => c.key));
+    const groups = matchRules(d.description, rules).groups.filter(g => !recurringKeys.has(g.issue));
     if (groups.length === 0) continue;
-    const parts = splitEvenly(d.minutes, groups.length);
+    const parts = splitEvenly(remaining, groups.length);
     groups.forEach((g, idx) => {
       ensureIssue(draft, { key: g.issue, summary: g.summary });
       draft.cells[cellKey(d.day, g.issue)] = { minutes: parts[idx], comment: g.parts.join(', ') };
@@ -77,6 +85,43 @@ export function applyRules(draft, rules) {
     filled++;
   }
   return filled;
+}
+
+/** Day of week (0 = Sunday … 6 = Saturday) of a day in a YYYY-MM month, independent of the time zone. */
+export function weekdayOf(month, day) {
+  const [y, m] = month.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, day)).getUTCDay();
+}
+
+/**
+ * Books each recurring entry ({ issue, summary, minutes, comment, weekdays }) on every matching weekday that
+ * has JaTT hours. Cells that already have hours or are posted are left alone, and a booking never exceeds the
+ * time still free that day. Returns how many cells were booked.
+ */
+export function applyRecurring(draft, recurring = []) {
+  let booked = 0;
+  for (const r of recurring) {
+    if (!r.issue || !(r.minutes > 0)) continue;
+    for (const d of draft.days) {
+      if (!r.weekdays?.includes(weekdayOf(draft.month, d.day))) continue;
+      const existing = draft.cells[cellKey(d.day, r.issue)];
+      if (existing?.minutes > 0 || isPosted(existing)) continue;
+      const minutes = Math.min(r.minutes, d.minutes - rowTotal(draft, d.day));
+      if (minutes <= 0) continue;
+      ensureIssue(draft, { key: r.issue, summary: r.summary });
+      draft.cells[cellKey(d.day, r.issue)] = { minutes, comment: r.comment || '', recurring: true };
+      booked++;
+    }
+  }
+  return booked;
+}
+
+/** What a month starts with: pinned issues, then recurring bookings, then rules on the remaining time. */
+export function prefill(draft, { pinned = [], recurring = [], rules = [] } = {}) {
+  pinned.forEach(i => ensureIssue(draft, i));
+  const recurringCells = applyRecurring(draft, recurring);
+  const filled = applyRules(draft, rules);
+  return { recurringCells, filled };
 }
 
 export function ensureIssue(draft, issue) {
@@ -157,14 +202,12 @@ export function summarize(draft) {
  * Starts the month over as if it was opened for the first time: pinned issues, rules applied.
  * Worklogs already posted to Jira are kept (with their issues) so they are never posted twice.
  */
-export function resetDraft(draft, { pinned = [], rules = [] } = {}) {
+export function resetDraft(draft, position = {}) {
   const postedCells = Object.fromEntries(Object.entries(draft.cells).filter(([, c]) => isPosted(c)));
   const kept = Object.keys(postedCells).length;
   const postedKeys = new Set(Object.keys(postedCells).map(k => k.split('|')[1]));
   const fresh = { ...draft, issues: draft.issues.filter(i => postedKeys.has(i.key)), cells: postedCells };
-  pinned.forEach(i => ensureIssue(fresh, i));
-  const filled = applyRules(fresh, rules);
-  return { draft: fresh, kept, filled };
+  return { draft: fresh, kept, ...prefill(fresh, position) };
 }
 
 /** Refreshes days from a newly loaded export while keeping all booked cells. */

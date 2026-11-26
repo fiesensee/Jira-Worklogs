@@ -99,3 +99,41 @@ test('resetDraft starts over but keeps posted worklogs and their issues', async 
   assert.equal(fresh.cells['2|A-1'].worklogId, '5');
   assert.equal(d.cells['3|A-3'].minutes, 450, 'the original draft is not modified');
 });
+
+test('recurring bookings land on matching weekdays with JaTT hours and never overbook', async () => {
+  const { applyRecurring, weekdayOf } = await import('../public/logic.js');
+  assert.equal(weekdayOf('2026-11', 2), 1, '2 Nov 2026 is a Monday');
+  const d = { ...draft(), issues };
+  d.days.push({ day: 5, minutes: 10, description: 'short day' });
+  setCell(d, 3, 'A-1', 30); // other hours on the day don't block the booking
+  d.cells['5|M-1'] = { minutes: 0, comment: '', worklogId: '1' }; // posted cells are never touched
+  const daily = { issue: 'M-1', summary: 'Meetings', minutes: 15, comment: 'Daily standup', weekdays: [1, 2, 4] };
+  assert.equal(applyRecurring(d, [daily]), 2);
+  assert.deepEqual(d.cells['2|M-1'], { minutes: 15, comment: 'Daily standup', recurring: true });
+  assert.equal(d.cells['3|M-1'].minutes, 15);
+  assert.equal(d.cells['4|M-1'], undefined, 'Wednesday is not a selected weekday');
+  assert.equal(d.cells['5|M-1'].worklogId, '1');
+  const tiny = { ...draft(), issues, days: [{ day: 2, minutes: 10, description: '' }] };
+  applyRecurring(tiny, [daily]);
+  assert.equal(tiny.cells['2|M-1'].minutes, 10, 'capped to the free time of the day');
+  assert.equal(applyRecurring(d, [daily]), 0, 'applying twice books nothing new');
+  assert.equal(applyRecurring(d, [{ ...daily, minutes: 0 }, { ...daily, issue: '' }]), 0);
+});
+
+test('prefill books recurring first and lets rules split only the remaining time', async () => {
+  const { prefill } = await import('../public/logic.js');
+  const d = draft();
+  const result = prefill(d, {
+    pinned: [{ key: 'P-1', summary: 'Pinned' }],
+    recurring: [{ issue: 'M-1', summary: 'Meetings', minutes: 15, comment: 'Daily standup', weekdays: [1, 2, 3, 4, 5] }],
+    rules: [{ pattern: 'daily|planning', issue: 'M-1' }, { pattern: 'migration|review', issue: 'D-1' }, { pattern: 'bugfix', issue: 'B-1' }]
+  });
+  assert.deepEqual(result, { recurringCells: 3, filled: 3 });
+  assert.deepEqual(d.issues.map(i => i.key), ['P-1', 'M-1', 'D-1', 'B-1']);
+  // Mon: "Daily" is covered by the recurring booking, so the migration issue gets the remaining 465 minutes.
+  assert.equal(d.cells['2|M-1'].minutes, 15);
+  assert.deepEqual(d.cells['2|D-1'], { minutes: 465, comment: 'payment migration' });
+  assert.equal(rowTotal(d, 2), 480);
+  assert.equal(rowTotal(d, 3), 450);
+  assert.equal(d.cells['4|B-1'].minutes, 225);
+});

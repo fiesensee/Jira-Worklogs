@@ -93,3 +93,6 @@ dialog td, dialog th { padding: 4px 6px; border-bottom: 1px solid var(--line); t
 .log .err { color: var(--err); }
 .log .ok { color: var(--ok); }
 .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; z-index: 10; }
+.recurring { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+.recurring .days { display: inline-flex; gap: 6px; }
+.recurring .days label { display: inline-flex; gap: 2px; align-items: center; font-size: 12px; }

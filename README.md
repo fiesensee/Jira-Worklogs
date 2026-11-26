@@ -39,7 +39,13 @@ Posted cells are locked and remembered. If some posts fail, fix the red cells an
 
 Rules map JaTT descriptions to issues, so next month starts pre-filled. Add one from the cell editor: *Text contains `daily|standup|planning` → DEMO-110*.
 
-When a month is opened for the first time, each comma-separated part of a day's description goes to the first rule it matches. If a day matches several issues, its hours are split evenly. *Mapping rules* lets you edit, reorder and delete rules. *Apply rules to empty days* runs them again on days that have no hours yet.
+When a month is opened for the first time, each comma-separated part of a day's description goes to the first rule it matches. If a day matches several issues, its hours are split evenly. *Mapping rules* lets you edit, reorder and delete rules. *Apply rules to empty days* runs them again on days that have no hours yet, or only recurring bookings.
+
+## Recurring bookings
+
+Use these for fixed slots such as a daily standup. *Recurring* in the toolbar sets, for each position: issue, hours, worklog text and weekdays (for example *DEMO-110, 0.25 h, "Daily standup", Mo–Fr except We*).
+
+They are booked on every selected weekday that has JaTT hours, so days you didn't work are skipped. A booking is never larger than the time still free that day. They are applied automatically when a month is opened for the first time or reset, **before** the mapping rules. The rules then split only the remaining time, and a rule pointing at the same issue is skipped that day because the recurring booking covers it. *Apply to this month* in the dialog adds them to a month you've already started, skipping days that have hours on that issue.
 
 ## Where things are stored
 
