@@ -153,6 +153,20 @@ export function summarize(draft) {
   return { perIssue: [...perIssue.values()], toPost, mismatches, jattTotal, bookedTotal };
 }
 
+/**
+ * Starts the month over as if it was opened for the first time: pinned issues, rules applied.
+ * Worklogs already posted to Jira are kept (with their issues) so they are never posted twice.
+ */
+export function resetDraft(draft, { pinned = [], rules = [] } = {}) {
+  const postedCells = Object.fromEntries(Object.entries(draft.cells).filter(([, c]) => isPosted(c)));
+  const kept = Object.keys(postedCells).length;
+  const postedKeys = new Set(Object.keys(postedCells).map(k => k.split('|')[1]));
+  const fresh = { ...draft, issues: draft.issues.filter(i => postedKeys.has(i.key)), cells: postedCells };
+  pinned.forEach(i => ensureIssue(fresh, i));
+  const filled = applyRules(fresh, rules);
+  return { draft: fresh, kept, filled };
+}
+
 /** Refreshes days from a newly loaded export while keeping all booked cells. */
 export function mergeDays(draft, days) {
   return { ...draft, days: days.map(d => ({ day: d.day, minutes: d.minutes, description: d.description })) };

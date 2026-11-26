@@ -83,3 +83,19 @@ test('summarize lists unposted worklogs and days that do not match JaTT', () => 
   assert.equal(s.bookedTotal, 880);
   assert.equal(s.jattTotal, 1170);
 });
+
+test('resetDraft starts over but keeps posted worklogs and their issues', async () => {
+  const { resetDraft } = await import('../public/logic.js');
+  const d = { ...draft(), issues: [...issues, { key: 'A-3', summary: 'Other' }] };
+  setCell(d, 2, 'A-1', 480);
+  setCell(d, 3, 'A-3', 450);
+  d.cells['2|A-1'].worklogId = '5';
+  const rules = [{ pattern: 'bugfix', issue: 'A-9', summary: 'Bugs' }];
+  const { draft: fresh, kept, filled } = resetDraft(d, { pinned: [{ key: 'A-2', summary: 'Dev' }], rules });
+  assert.equal(kept, 1);
+  assert.equal(filled, 1, 'only day 4 (bugfixing) matches a rule');
+  assert.deepEqual(fresh.issues.map(i => i.key), ['A-1', 'A-2', 'A-9'], 'posted issue, pinned issue, rule issue');
+  assert.deepEqual(Object.keys(fresh.cells).sort(), ['2|A-1', '4|A-9']);
+  assert.equal(fresh.cells['2|A-1'].worklogId, '5');
+  assert.equal(d.cells['3|A-3'].minutes, 450, 'the original draft is not modified');
+});

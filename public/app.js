@@ -1,6 +1,6 @@
 import {
   cellKey, dateOf, parseHours, formatHours, rowTotal, dayCells, setCell, fillRest, splitDay,
-  copyPrevious, applyRules, ensureIssue, summarize, mergeDays
+  copyPrevious, applyRules, ensureIssue, summarize, mergeDays, resetDraft
 } from './logic.js';
 
 const app = document.getElementById('app');
@@ -136,6 +136,7 @@ function renderGrid() {
       <button id="back">← Other file</button>
       <button id="rules">Mapping rules (${position().rules.length})</button>
       <button id="applyRules">Apply rules to empty days</button>
+      <button id="reset" title="Start this month over: removes all unposted hours, texts and issue columns">Reset grid</button>
       <span class="row">Fill empty days with
         <select id="fillWith"><option value="">issue…</option>${d.issues.map(i => `<option>${esc(i.key)}</option>`).join('')}</select>
       </span>
@@ -153,6 +154,18 @@ function renderGrid() {
   document.getElementById('applyRules').onclick = () => {
     const n = applyRules(d, position().rules);
     toast(n ? `Filled ${n} day(s) from rules.` : 'No empty day matched a rule.');
+    changed();
+  };
+  document.getElementById('reset').onclick = () => {
+    const posted = Object.values(d.cells).filter(c => c.worklogId).length;
+    const message = 'Reset this month? All unposted hours, texts and issue columns are removed; '
+      + 'pinned issues and mapping rules are applied again.'
+      + (posted ? `\n\n${posted} worklog(s) already posted to Jira are kept.` : '');
+    if (!confirm(message)) return;
+    const result = resetDraft(d, position());
+    state.draft = result.draft;
+    drawer.hidden = true;
+    toast(`Grid reset${result.filled ? `, rules pre-filled ${result.filled} day(s)` : ''}.`);
     changed();
   };
   document.getElementById('fillWith').onchange = e => {
@@ -260,16 +273,20 @@ function renderIssues() {
     ${state.findResults ? `<div class="results">${state.findResults.map(resultRow).join('') || '<span class="muted">Nothing found.</span>'}</div>` : ''}
     ${state.showAssigned && state.assigned ? `<div class="results">${state.assigned.map(resultRow).join('')}</div>` : ''}`;
 
+  const findInput = document.getElementById('find');
+  findInput.value = state.findQuery || '';
+  findInput.oninput = () => { state.findQuery = findInput.value; };
   const find = async () => {
-    const q = document.getElementById('find').value.trim();
+    const q = findInput.value.trim();
     if (!q) { state.findResults = null; return renderIssues(); }
     try { state.findResults = await api(`/api/issues/find?q=${encodeURIComponent(q)}`); }
     catch (e) { toast(e.message); state.findResults = []; }
     renderIssues();
-    document.getElementById('find').value = q;
+    document.getElementById('find').focus();
   };
   document.getElementById('findBtn').onclick = find;
-  document.getElementById('find').onkeydown = e => e.key === 'Enter' && find();
+  // Not `e.key === 'Enter' && find()`: returning false from onkeydown cancels every other keystroke.
+  findInput.onkeydown = e => { if (e.key === 'Enter') find(); };
   document.getElementById('showAssigned').onclick = () => { state.showAssigned = !state.showAssigned; renderIssues(); };
   el.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
     const issue = [...(state.findResults || []), ...(state.assigned || [])].find(i => i.key === b.dataset.add);

@@ -28,6 +28,7 @@ To try it without a Jira, run `npm run mock`. It serves a fake Jira with a handf
    - Press **Enter in an empty cell**, or hover and click **⇥**, to book the rest of the day there.
    - **↑ copy** reuses the previous day's split, scaled to this day's hours. **÷** splits evenly across the issues that already have hours. **×** clears the day.
    - **Fill empty days with…** puts every day that has no hours yet onto one issue.
+   - **Reset grid** starts the month over: it removes all unposted hours, texts and issue columns, then adds pinned issues and applies rules again. Worklogs already posted to Jira are kept.
    - The *Booked* column turns orange when a day doesn't add up to the JaTT hours.
 5. **Write the texts.** Click **✎** next to a cell. The text starts as the JaTT description. Extend it, or insert a **snippet** you saved for that issue earlier. A blue ✎ means you changed the text.
 6. **Review & post.** It shows hours per issue and the days that don't match JaTT, then creates one Jira worklog per cell. Each worklog starts at 09:00 on its day (`WORKLOG_START` changes the time).
